@@ -1,8 +1,6 @@
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.SQLException;
+import java.sql.*;
 import java.util.Scanner;
 import java.util.regex.Pattern;
 
@@ -11,6 +9,10 @@ public class KahlaCore {
 
   private static final String JDBC_AFFIX = "jdbc:sqlite:";
   private static final String DB_NAME = "digikam4.db";
+
+  // PreparedStatements.
+  private static final String QUERY_FETCH_ALBUMID = "SELECT id FROM Albums WHERE relativePath = ? AND albumRoot = ?";
+  private static final String QUERY_FETCH_ROOTID = "SELECT id FROM AlbumRoots WHERE specificPath = ?";
 
 
   public static void start(String dbDir, String initialImageDir) {
@@ -34,22 +36,21 @@ public class KahlaCore {
 
     // If we do have an ini file, tag all the images in this directory.
     if (iniFile != null) {
-      processImages(iniFile);
+      // We need an albumId to tag things properly, or we'll choke on files with duplicate names.
+      int albumId = fetchAlbumID(currentDir);
+      System.out.println("DEBUG: albumID is "+albumId);
+      processImages(iniFile, albumId);
     }
   }
 
-  private static void processImages(Scanner iniFile) {
+  private static void processImages(Scanner iniFile, int albumId) {
     int filesTagged = 0; // For verbosely reporting everything we did as a sanity check.
     int filesSkipped = 0;
-    // this is probably incorrect
-    // Pattern for determining that the next line in the Scanner is an image name.
-    Pattern p = Pattern.compile("\\[.*");
     // The ini file is a plaintext series of lines. An image name in brackets will be followed by
     // various attributes on their own lines. The one we care about is 'keywords=' followed by a
     // comma-delimited list of tags. I am *reasonably* sure 'keywords' always comes first, but not
     // completely certain. To be safe, we'll assume it might not.
 
-    // TODO - might want to grab the DigiKam AlbumID here to make queries more efficient?
     // Grab first line.
     String nextLine = iniFile.nextLine();
     while (iniFile.hasNextLine()) {
@@ -73,7 +74,7 @@ public class KahlaCore {
       // If we got some tags and this isn't a jpg, tag the image in DigiKam.
       if ((tagsLine != null) && isNotJpg(imageName)) {
         String[] tags = tagsLine.split(",");
-        if (tagImage(imageName, tags)) {
+        if (tagImage(imageName, tags, albumId)) {
           filesTagged++;
         }
         else { // If we didn't tag, that implies we found a Picasa-tagged image that DigiKam doesn't
@@ -82,7 +83,7 @@ public class KahlaCore {
         }
       }
 
-      // Scanner should now be pointing at the next file block.
+      // nextLine should now have the next image name (OR we're out of lines to process).
     }
 
     // Report.
@@ -93,9 +94,75 @@ public class KahlaCore {
     System.out.println(report);
   }
 
-  private static boolean tagImage(String imageName, String[] tags) {
+  private static boolean tagImage(String imageName, String[] tags, int albumId) {
     System.out.println("DEBUG: tagImage currently does nothing! got "+imageName+" with "+tags.length+" tags");
     return true;
+  }
+
+  private static int fetchAlbumID(String directoryName) {
+    // DigiKam stores directory paths in an extremely wack way. We need to figure out the albumRoot
+    // in order to figure out what albumID we're in.
+
+    // DigiKam stores directory paths without the drive letter on them for some reason, so we need
+    // to trim that off.
+    String relativePath = directoryName;
+    if (directoryName.contains(":")) {
+      relativePath = directoryName.substring(directoryName.indexOf(':') + 1);
+      // If it's only one character long, it's a single '/' and the album's root directory; otherwise,
+      // we need to remove a possible trailing slash.
+      if (relativePath.length() > 1 && relativePath.endsWith("/")) {
+        relativePath = relativePath.substring(0, relativePath.length() - 1);
+      }
+    }
+    System.out.println("ALBUMID DEBUG: relativePath is "+relativePath);
+    // We need to figure out the albumRoot. We'll start checking AlbumRoots and lop off more of the
+    // path as we go. Anything we lop off will be a path stored in Albums.
+    int albumRootId = -1;
+    String leftoverPath = "";
+    while (albumRootId == -1 && relativePath.length() > 0) {
+      try {
+        PreparedStatement rootPs = conn.prepareStatement(QUERY_FETCH_ROOTID);
+        rootPs.clearParameters();
+        rootPs.setString(1, relativePath);
+        ResultSet rootRes = rootPs.executeQuery();
+        if (rootRes.next()) {
+          albumRootId = rootRes.getInt("id");
+        }
+        else {
+          // If we didn't find it, remove the last directory.
+          leftoverPath = relativePath.substring(relativePath.lastIndexOf('/')) + leftoverPath;
+          relativePath = relativePath.substring(0, relativePath.lastIndexOf('/'));
+        }
+      } catch (SQLException throwables) {
+        System.out.println("Failed to get album root ID; something went catastrophically wrong.");
+        // TODO if we didn't get an albumrootID, this file isn't indexed by digikam and we need to
+        // continue elegantly
+        throwables.printStackTrace();
+        break;
+      }
+
+    }
+    System.out.println("DEBUG got album root: "+albumRootId);
+    // If leftoverPath is an empty string, the current directory is an album root and should just be
+    // "/".
+    if (leftoverPath.equals("")) {
+      leftoverPath = "/";
+    }
+    try {
+      PreparedStatement ps = conn.prepareStatement(QUERY_FETCH_ALBUMID);
+      ps.clearParameters();
+      ps.setString(1, leftoverPath);
+      ps.setInt(2, albumRootId);
+      ResultSet res = ps.executeQuery();
+      if (res.next()) {
+        return res.getInt("id");
+      }
+    } catch (SQLException throwables) {
+      System.out.println("Failed to get album ID for directory: "+directoryName);
+      throwables.printStackTrace();
+    }
+    // We shouldn't ever get here.
+    return -1;
   }
 
   private static boolean isNotJpg(String imageName) {

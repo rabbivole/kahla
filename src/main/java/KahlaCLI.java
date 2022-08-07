@@ -2,6 +2,10 @@ import picocli.CommandLine;
 
 import java.util.Scanner;
 
+// TODO: convert user directory input to single forward slashes so that I can scrape the DigiKam-friendly
+// relative path
+// TODO: lowercase the user input on confirm so a capital N still aborts
+
 @CommandLine.Command(name = "kahlaCLI", mixinStandardHelpOptions = true, version = "0.1",
         description = "Converts Picasa tags to DigiKam tags.")
 public class KahlaCLI implements Runnable {
