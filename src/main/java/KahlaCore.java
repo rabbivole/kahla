@@ -4,6 +4,12 @@ import java.sql.*;
 import java.util.Scanner;
 import java.util.regex.Pattern;
 
+// TODO: Automating special tags for files that are in Picasa albums or contain facetags seems
+// totally doable. It's slightly a pain in the ass (I think we need to scrape any [.album or
+// [Contacts2] data for the directory before we do any tag parsing and store those in a list or
+// something; also, we need to *not* skip jpgs for this purpose) so I'll probably add it later.
+// Might want to make it optional.
+
 public class KahlaCore {
   private static Connection conn;
 
@@ -13,6 +19,10 @@ public class KahlaCore {
   // PreparedStatements.
   private static final String QUERY_FETCH_ALBUMID = "SELECT id FROM Albums WHERE relativePath = ? AND albumRoot = ?";
   private static final String QUERY_FETCH_ROOTID = "SELECT id FROM AlbumRoots WHERE specificPath = ?";
+  private static final String QUERY_FETCH_IMAGEID = "SELECT id FROM Images WHERE album = ? AND name = ?";
+  private static final String QUERY_FETCH_TAGID = "SELECT id FROM Tags WHERE name = ?";
+  private static final String QUERY_CREATE_TAG = "INSERT INTO Tags (pid, name) VALUES (0, ?)";
+  private static final String QUERY_TAG_IMAGE = "INSERT OR IGNORE INTO ImageTags (imageid, tagid) VALUES(?, ?)";
 
 
   public static void start(String dbDir, String initialImageDir) {
@@ -73,6 +83,7 @@ public class KahlaCore {
 
       // If we got some tags and this isn't a jpg, tag the image in DigiKam.
       if ((tagsLine != null) && isNotJpg(imageName)) {
+        tagsLine = tagsLine.substring(tagsLine.indexOf('=') + 1); // strip the 'keywords='
         String[] tags = tagsLine.split(",");
         if (tagImage(imageName, tags, albumId)) {
           filesTagged++;
@@ -95,8 +106,92 @@ public class KahlaCore {
   }
 
   private static boolean tagImage(String imageName, String[] tags, int albumId) {
-    System.out.println("DEBUG: tagImage currently does nothing! got "+imageName+" with "+tags.length+" tags");
+    // Try to grab an image id- if there isn't one, DigiKam doesn't know this file, and
+    // we should skip.
+    int imageId = fetchImageID(imageName, albumId);
+    if (imageId == -1) {
+      return false;
+    }
+
+    for (String tag : tags) {
+      // Check if this tag already exists in DigiKam. If not, we need to insert it into Tags.
+      int tagId = fetchTagID(tag);
+      if (tagId == -1) {
+        tagId = createNewTag(tag);
+      }
+
+      // Do an INSERT OR IGNORE into ImageTags to actually tag the image, just in case it's already
+      // tagged.
+      try {
+        PreparedStatement ps = conn.prepareStatement(QUERY_TAG_IMAGE);
+        ps.clearParameters();
+        ps.setInt(1, imageId);
+        ps.setInt(2, tagId);
+        ps.executeUpdate();
+
+      } catch (SQLException throwables) {
+        System.out.println("Failed to tag image.");
+        throwables.printStackTrace();
+        return false;
+      }
+    }
+
     return true;
+  }
+
+  private static int createNewTag(String tag) {
+    // Tag id is an integer primary key, so if we don't specify it, it'll autoincrement.
+    // Then we have to use fetchTagID to figure out what id it actually received (which is lame but
+    // I don't know a way to do this that doesn't involve two queries somewhere).
+    try {
+      PreparedStatement ps = conn.prepareStatement(QUERY_CREATE_TAG);
+      ps.clearParameters();
+      ps.setString(1, tag);
+      ps.executeUpdate();
+      return fetchTagID(tag);
+    } catch (SQLException throwables) {
+      System.out.println("Failed to create tag.");
+      throwables.printStackTrace();
+      return -1;
+    }
+  }
+
+  private static int fetchTagID(String tag) {
+    try {
+      PreparedStatement ps = conn.prepareStatement(QUERY_FETCH_TAGID);
+      ps.clearParameters();
+      ps.setString(1, tag);
+      ResultSet res = ps.executeQuery();
+      int tagId = -1;
+      if (res.next()) {
+        tagId = res.getInt("id");
+      }
+      return tagId;
+    } catch (SQLException throwables) {
+      System.out.println("Failed trying to fetch tag ID. (Is DigiKam open?)");
+      throwables.printStackTrace();
+      return -1;
+    }
+  }
+
+  private static int fetchImageID(String imageName, int albumId) {
+    try {
+      PreparedStatement ps = conn.prepareStatement(QUERY_FETCH_IMAGEID);
+      ps.clearParameters();
+      ps.setInt(1, albumId);
+      ps.setString(2, imageName);
+      ResultSet res = ps.executeQuery();
+      int imageId = -1;
+      if (res.next()) {
+        imageId = res.getInt("id");
+      }
+      return imageId;
+    } catch (SQLException throwables) {
+      System.out.println("Failed trying to fetch image ID. (Is DigiKam open?)");
+      throwables.printStackTrace();
+      return -1;
+    }
+
   }
 
   private static int fetchAlbumID(String directoryName) {
@@ -129,7 +224,7 @@ public class KahlaCore {
           albumRootId = rootRes.getInt("id");
         }
         else {
-          // If we didn't find it, remove the last directory.
+          // If we didn't find it, remove the last directory and try again.
           leftoverPath = relativePath.substring(relativePath.lastIndexOf('/')) + leftoverPath;
           relativePath = relativePath.substring(0, relativePath.lastIndexOf('/'));
         }
