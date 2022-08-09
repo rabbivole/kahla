@@ -1,6 +1,8 @@
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.FilenameFilter;
 import java.sql.*;
+import java.util.Arrays;
 import java.util.Scanner;
 import java.util.regex.Pattern;
 
@@ -25,12 +27,12 @@ public class KahlaCore {
   private static final String QUERY_TAG_IMAGE = "INSERT OR IGNORE INTO ImageTags (imageid, tagid) VALUES(?, ?)";
 
 
-  public static void start(String dbDir, String initialImageDir) {
+  public static void start(String dbDir, String initialImageDir, boolean doRecursive) {
     dbConnect(dbDir);
-    process(initialImageDir);
+    process(initialImageDir, doRecursive);
   }
 
-  private static void process(String currentDir) {
+  private static void process(String currentDir, boolean doRecursive) {
     String[] folders = currentDir.split("/");
     System.out.println("Processing folder "+folders[folders.length-1]+".");
 
@@ -48,9 +50,31 @@ public class KahlaCore {
     if (iniFile != null) {
       // We need an albumId to tag things properly, or we'll choke on files with duplicate names.
       int albumId = fetchAlbumID(currentDir);
-      System.out.println("DEBUG: albumID is "+albumId);
       processImages(iniFile, albumId);
     }
+
+    // Optionally, move through directories. Finding all the directories in currentDir gets ugly.
+    if (doRecursive) {
+      System.out.println("Continuing through file system.");
+      String[] dirsInCurrentDir = getFolders(currentDir);
+      System.out.println("DEBUG: found directories: " + Arrays.toString(dirsInCurrentDir));
+      for (String d : dirsInCurrentDir) {
+        process(currentDir+"/"+d, doRecursive);
+      }
+    }
+  }
+
+  // this is some stackoverflow stuff: https://stackoverflow.com/a/5125258
+  private static String[] getFolders(String topDir) {
+    File f = new File(topDir);
+    return f.list((dir, name) -> {
+      // To speed this up a bit, auto-reject anything with a common file extension.
+      // This is spicy.
+      if (name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".gif")) {
+        return false;
+      }
+      return new File(dir, name).isDirectory();
+    });
   }
 
   private static void processImages(Scanner iniFile, int albumId) {

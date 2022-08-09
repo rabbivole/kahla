@@ -40,7 +40,7 @@ public class KahlaCLI implements Runnable {
       System.out.println("Aborting.");
     } else {
       System.out.println("here's where we would fire up the processing cannon");
-      KahlaCore.start(dbDir, imageDir);
+      KahlaCore.start(dbDir, imageDir, doRecursive);
     }
   }
 
