@@ -3,6 +3,7 @@ import java.io.FileNotFoundException;
 import java.io.FilenameFilter;
 import java.sql.*;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Scanner;
 import java.util.regex.Pattern;
 
@@ -29,7 +30,8 @@ public class KahlaCore {
 
   public static void start(String dbDir, String initialImageDir, boolean doRecursive) {
     dbConnect(dbDir);
-    process(initialImageDir, doRecursive);
+    // DEBUG: currently just 'true' to test the meta tagging system
+    process(initialImageDir, doRecursive, true);
     System.out.println("All done. Kahla will now close.");
     try {
       conn.close();
@@ -40,15 +42,15 @@ public class KahlaCore {
     }
   }
 
-  private static void process(String currentDir, boolean doRecursive) {
+  private static void process(String currentDir, boolean doRecursive, boolean tagPAlbums) {
     String[] folders = currentDir.split("/");
     System.out.println("Processing folder "+folders[folders.length-1]+".");
 
     // First look for a picasa.ini in this directory. If there isn't one, we move on to the next
     // folder.
     Scanner iniFile = null;
+    File f = new File(currentDir+"/.picasa.ini");
     try {
-      File f = new File(currentDir+"/.picasa.ini");
       iniFile = new Scanner(f);
     } catch (FileNotFoundException e) {
       System.out.println("No picasa.ini found in this directory. Continuing.");
@@ -58,16 +60,33 @@ public class KahlaCore {
     if (iniFile != null) {
       // We need an albumId to tag things properly, or we'll choke on files with duplicate names.
       int albumId = fetchAlbumID(currentDir);
-      processImages(iniFile, albumId);
+
+      // If tagPAlbums is true, we're going to add digiKam tags for Picasa albums and Picasa faces.
+      // To do this, we first need to scan through the ini file and build a record of all the
+      // albums/people. We'll store each unique alphanumeric token as a hashmap key, with the plaintext
+      // name as its value.
+      HashMap<String, String> picasaMetaTokens = null;
+      if (tagPAlbums) {
+        picasaMetaTokens = buildTokenMap(iniFile);
+        // Clean up after ourselves by creating a new Scanner; processImages still needs to read the
+        // file.
+        try {
+          iniFile = new Scanner(f);
+        } catch (FileNotFoundException e) {
+          // This shouldn't happen; we only get here if we successfully created a Scanner above.
+          e.printStackTrace();
+        }
+
+      }
+      processImages(iniFile, albumId, picasaMetaTokens);
     }
 
     // Optionally, move through directories. Finding all the directories in currentDir gets ugly.
     if (doRecursive) {
       System.out.println("Continuing through file system.");
       String[] dirsInCurrentDir = getFolders(currentDir);
-      System.out.println("DEBUG: found directories: " + Arrays.toString(dirsInCurrentDir));
       for (String d : dirsInCurrentDir) {
-        process(currentDir+"/"+d, doRecursive);
+        process(currentDir+"/"+d, doRecursive, tagPAlbums);
       }
     }
   }
@@ -85,13 +104,14 @@ public class KahlaCore {
     });
   }
 
-  private static void processImages(Scanner iniFile, int albumId) {
+  private static void processImages(Scanner iniFile, int albumId, HashMap<String, String> picasaMetaTokens) {
     int filesTagged = 0; // For verbosely reporting everything we did as a sanity check.
     int filesSkipped = 0;
     // The ini file is a plaintext series of lines. An image name in brackets will be followed by
     // various attributes on their own lines. The one we care about is 'keywords=' followed by a
     // comma-delimited list of tags. I am *reasonably* sure 'keywords' always comes first, but not
     // completely certain. To be safe, we'll assume it might not.
+
 
     // Grab first line.
     String nextLine = iniFile.nextLine();
@@ -135,6 +155,57 @@ public class KahlaCore {
       report += " "+filesSkipped+" items were skipped, because they don't exist in DigiKam's database.";
     }
     System.out.println(report);
+  }
+
+  private static HashMap<String, String> buildTokenMap(Scanner iniFile) {
+    HashMap<String, String> picasaMetaTokens = new HashMap<>();
+    String nextLine = iniFile.nextLine();
+    while (iniFile.hasNextLine()) {
+      // If this is the beginning of an album info block:
+      if (nextLine.startsWith("[.album")) {
+        /**
+         * Example input:
+         * [.album:ca7ebf894b2735c6f8bed85e4eadc9f5]
+         * name=debug-album
+         * token=ca7ebf894b2735c6f8bed85e4eadc9f5
+         * date=2022-08-23T13:44:49-07:00
+         *
+         * However, Picasa can also generate 'phantom' albums with no name or date that aren't used?
+         * Great. Thanks. So we need to be prepared for that.
+         */
+        nextLine = iniFile.nextLine();
+        String name = nextLine.substring(nextLine.indexOf('=') + 1);
+        nextLine = iniFile.nextLine();
+        // If this is a 'phantom' album, abort saving this album's data.
+        if (nextLine.startsWith("[")) {
+          continue;
+        }
+        System.out.println("DEBUG: " + nextLine);
+        String token = nextLine.substring(nextLine.indexOf('=') + 1);
+        picasaMetaTokens.put(token, name); // we'll want to find name using token
+      } // If this is the beginning of the face info block:
+      else if (nextLine.equals("[Contacts2]")) {
+        /**
+         * Example input:
+         * [Contacts2]
+         * 461691f5081b1d22=debug-peser;;
+         * f4b185d2a7bfac7d=debug-yoshi;;
+         */
+        nextLine = iniFile.nextLine();
+        while (!nextLine.startsWith("[")) {
+          String token = nextLine.substring(0, nextLine.indexOf('='));
+          String name = nextLine.substring(nextLine.indexOf('=') + 1, nextLine.indexOf(';'));
+          picasaMetaTokens.put(token, name);
+          nextLine = iniFile.nextLine();
+        }
+      }
+      else {
+        nextLine = iniFile.nextLine();
+      }
+    }
+    System.out.println("DEBUG: built meta table: ");
+    System.out.println(picasaMetaTokens);
+    return picasaMetaTokens;
   }
 
   private static boolean tagImage(String imageName, String[] tags, int albumId) {
@@ -310,4 +381,6 @@ public class KahlaCore {
               "currently open and has locked the database.)");
     }
   }
+
+
 }

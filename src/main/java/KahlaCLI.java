@@ -18,6 +18,7 @@ public class KahlaCLI implements Runnable {
           description = "Flag for whether to recursively process images in any folders nested within the image directory.")
   private boolean doRecursive;
 
+
   public static void main(String[] args) {
     int exitCode = new CommandLine(new KahlaCLI()).execute(args);
     System.exit(exitCode);
@@ -38,7 +39,6 @@ public class KahlaCLI implements Runnable {
     if (input.equals("n")) {
       System.out.println("Aborting.");
     } else {
-      System.out.println("here's where we would fire up the processing cannon");
       KahlaCore.start(dbDir, imageDir, doRecursive);
     }
   }
