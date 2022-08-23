@@ -30,6 +30,14 @@ public class KahlaCore {
   public static void start(String dbDir, String initialImageDir, boolean doRecursive) {
     dbConnect(dbDir);
     process(initialImageDir, doRecursive);
+    System.out.println("All done. Kahla will now close.");
+    try {
+      conn.close();
+    } catch (SQLException throwables) {
+      // Cannot imagine how closing would fail (if we failed to open, we would've exited already)
+      // but here you go anyway.
+      throwables.printStackTrace();
+    }
   }
 
   private static void process(String currentDir, boolean doRecursive) {
@@ -67,7 +75,7 @@ public class KahlaCore {
   // this is some stackoverflow stuff: https://stackoverflow.com/a/5125258
   private static String[] getFolders(String topDir) {
     File f = new File(topDir);
-    return f.list((dir, name) -> {
+    return f.list((dir, name) -> { // filtering input
       // To speed this up a bit, auto-reject anything with a common file extension.
       // This is spicy.
       if (name.endsWith(".jpg") || name.endsWith(".png") || name.endsWith(".gif")) {
@@ -253,11 +261,11 @@ public class KahlaCore {
           relativePath = relativePath.substring(0, relativePath.lastIndexOf('/'));
         }
       } catch (SQLException throwables) {
-        System.out.println("Failed to get album root ID; something went catastrophically wrong.");
-        // TODO if we didn't get an albumrootID, this file isn't indexed by digikam and we need to
+        System.out.println("Failed to get album root ID; this is a directory DigiKam isn't aware of.");
+        // if we didn't get an albumrootID, this file isn't indexed by digikam and we need to
         // continue elegantly
-        throwables.printStackTrace();
-        break;
+        // TODO: i have a feeling this will print many, many times, which is not ideal
+        return -1;
       }
 
     }
