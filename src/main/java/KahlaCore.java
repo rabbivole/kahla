@@ -2,9 +2,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FilenameFilter;
 import java.sql.*;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Scanner;
+import java.util.*;
 import java.util.regex.Pattern;
 
 // TODO: Automating special tags for files that are in Picasa albums or contain facetags seems
@@ -19,6 +17,8 @@ public class KahlaCore {
   private static final String JDBC_AFFIX = "jdbc:sqlite:";
   private static final String DB_NAME = "digikam4.db";
 
+  private static final String METATAG_AFFIX = "pmeta/";
+
   // PreparedStatements.
   private static final String QUERY_FETCH_ALBUMID = "SELECT id FROM Albums WHERE relativePath = ? AND albumRoot = ?";
   private static final String QUERY_FETCH_ROOTID = "SELECT id FROM AlbumRoots WHERE specificPath = ?";
@@ -28,10 +28,10 @@ public class KahlaCore {
   private static final String QUERY_TAG_IMAGE = "INSERT OR IGNORE INTO ImageTags (imageid, tagid) VALUES(?, ?)";
 
 
-  public static void start(String dbDir, String initialImageDir, boolean doRecursive) {
+  public static void start(String dbDir, String initialImageDir,
+                           boolean doRecursive, boolean tagPMeta) {
     dbConnect(dbDir);
-    // DEBUG: currently just 'true' to test the meta tagging system
-    process(initialImageDir, doRecursive, true);
+    process(initialImageDir, doRecursive, tagPMeta);
     System.out.println("All done. Kahla will now close.");
     try {
       conn.close();
@@ -123,20 +123,27 @@ public class KahlaCore {
       // Strip the brackets off it to get the image name.
       String imageName = nextLine.substring(1, nextLine.length() - 1);
 
-      // Try and find a 'keywords' line while we advance the Scanner to the next file name.
+      // Try and find applicable data while we advance the Scanner to the next file name.
       // This is jank because I can't get hasNext(Pattern) to work.
       String tagsLine = null;
+      String albumsLine = null;
+      String facesLine = null;
+      List<String> tags = new LinkedList<>();
       do {
         nextLine = iniFile.nextLine();
         if (nextLine.startsWith("keywords")) {
-          tagsLine = nextLine;
+          unpackTags(tags, nextLine);
+        }
+        else if (nextLine.startsWith("albums")) {
+          unpackAlbums(tags, nextLine, picasaMetaTokens);
+        }
+        else if (nextLine.startsWith("faces")) {
+          unpackFaces(tags, nextLine, picasaMetaTokens);
         }
       } while (nextLine.charAt(0) != '[' && iniFile.hasNextLine());
 
-      // If we got some tags and this isn't a jpg, tag the image in DigiKam.
-      if ((tagsLine != null) && isNotJpg(imageName)) {
-        tagsLine = tagsLine.substring(tagsLine.indexOf('=') + 1); // strip the 'keywords='
-        String[] tags = tagsLine.split(",");
+      // If we got some tags, tag the image in DigiKam.
+      if (!tags.isEmpty()) {
         if (tagImage(imageName, tags, albumId)) {
           filesTagged++;
         }
@@ -155,6 +162,56 @@ public class KahlaCore {
       report += " "+filesSkipped+" items were skipped, because they don't exist in DigiKam's database.";
     }
     System.out.println(report);
+  }
+
+  /**
+   * Example input:
+   * keywords=interior design,minecraft
+   * @param tags
+   * @param nextLine
+   */
+  private static void unpackTags(List<String> tags, String nextLine) {
+    // Strip the 'keywords=' off.
+    String tagsLine = nextLine.substring(nextLine.indexOf('=') + 1);
+    // Split on commas.
+    List<String> arr = List.of(tagsLine.split(","));
+    // Add all of them to the list.
+    tags.addAll(arr);
+  }
+
+  private static void unpackAlbums(List<String> tags, String nextLine,
+                                   HashMap<String, String> picasaMetaTokens) {
+    // Strip the 'albums=' off.
+    String albumsLine = nextLine.substring(nextLine.indexOf('=') + 1);
+    // Split on commas.
+    String[] arr = albumsLine.split(",");
+    // We have a list of tokens. We need to add the plaintext album names that correspond to
+    // those tokens.
+    for (String t : arr) {
+      tags.add(METATAG_AFFIX + picasaMetaTokens.get(t));
+    }
+  }
+
+  /**
+   * Example input:
+   * faces=rect64(1c863ab430a462a5),7765103530c632d3;rect64(44633848593c6170),1b5634af99e8c7e2
+   * (the second token in each pair is the thing we need)
+   * @param tags
+   * @param nextLine
+   */
+  private static void unpackFaces(List<String> tags, String nextLine,
+                                  HashMap<String, String> picasaMetaTokens) {
+    // This one gets uglier.
+    // Strip the 'faces=' off.
+    String facesLine = nextLine.substring(nextLine.indexOf('=') + 1);
+    // Split on semicolons to get a list of 'rect64(#),token' pairs.
+    String[] pairs = facesLine.split(";");
+    for (String p : pairs) {
+      // We want everything after the comma.
+      String token = p.substring(p.indexOf(",") + 1);
+      // Add the plaintext person name that corresponds to this token.
+      tags.add(METATAG_AFFIX + picasaMetaTokens.get(token));
+    }
   }
 
   private static HashMap<String, String> buildTokenMap(Scanner iniFile) {
@@ -208,7 +265,7 @@ public class KahlaCore {
     return picasaMetaTokens;
   }
 
-  private static boolean tagImage(String imageName, String[] tags, int albumId) {
+  private static boolean tagImage(String imageName, List<String> tags, int albumId) {
     // Try to grab an image id- if there isn't one, DigiKam doesn't know this file, and
     // we should skip.
     int imageId = fetchImageID(imageName, albumId);

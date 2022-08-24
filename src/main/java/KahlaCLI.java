@@ -18,6 +18,9 @@ public class KahlaCLI implements Runnable {
           description = "Flag for whether to recursively process images in any folders nested within the image directory.")
   private boolean doRecursive;
 
+  @CommandLine.Option(names = {"-m"},
+          description = "Flag for whether to tag images with the names of albums and people they contain.")
+  private boolean tagPMeta;
 
   public static void main(String[] args) {
     int exitCode = new CommandLine(new KahlaCLI()).execute(args);
@@ -31,6 +34,7 @@ public class KahlaCLI implements Runnable {
 
     System.out.println("Images will be processed in the directory: " + imageDir);
     if (doRecursive) { System.out.println("Folders will be recursively traversed."); }
+    if (tagPMeta) { System.out.println("Images will be tagged with album/face data. (Tags will be prefixed with 'pmeta/'."); }
     System.out.println("Your digikam4.db file is located in the directory: " + dbDir);
     System.out.println("Is this correct? (Enter 'n' to cancel. Enter anything else to proceed.)");
 
@@ -39,7 +43,7 @@ public class KahlaCLI implements Runnable {
     if (input.equals("n")) {
       System.out.println("Aborting.");
     } else {
-      KahlaCore.start(dbDir, imageDir, doRecursive);
+      KahlaCore.start(dbDir, imageDir, doRecursive, tagPMeta);
     }
   }
 
