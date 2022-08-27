@@ -46,8 +46,7 @@ public class KahlaCore {
     String[] folders = currentDir.split("/");
     System.out.println("Processing folder "+folders[folders.length-1]+".");
 
-    // First look for a picasa.ini in this directory. If there isn't one, we move on to the next
-    // folder.
+    // First look for a picasa.ini in this directory. If there isn't one, we move on.
     Scanner iniFile = null;
     File f = new File(currentDir+"/.picasa.ini");
     try {
@@ -149,6 +148,7 @@ public class KahlaCore {
         }
         else { // If we didn't tag, that implies we found a Picasa-tagged image that DigiKam doesn't
           // know about. User should probably be warned.
+          // Found out picasa.ini can track images that are no longer there, which will also cause this.
           filesSkipped++;
         }
       }
@@ -159,7 +159,9 @@ public class KahlaCore {
     // Report.
     String report = "Done tagging in this directory. "+filesTagged+" items tagged.";
     if (filesSkipped > 0) {
-      report += " "+filesSkipped+" items were skipped, because they don't exist in DigiKam's database.";
+      report += " "+filesSkipped+" items were skipped, either because they don't exist in DigiKam's " +
+              "database, or because picasa.ini contains a reference to an image that has been moved " +
+              "or deleted.";
     }
     System.out.println(report);
   }
@@ -237,7 +239,6 @@ public class KahlaCore {
         if (nextLine.startsWith("[")) {
           continue;
         }
-        System.out.println("DEBUG: " + nextLine);
         String token = nextLine.substring(nextLine.indexOf('=') + 1);
         picasaMetaTokens.put(token, name); // we'll want to find name using token
       } // If this is the beginning of the face info block:
@@ -260,8 +261,6 @@ public class KahlaCore {
         nextLine = iniFile.nextLine();
       }
     }
-    System.out.println("DEBUG: built meta table: ");
-    System.out.println(picasaMetaTokens);
     return picasaMetaTokens;
   }
 
@@ -369,7 +368,6 @@ public class KahlaCore {
         relativePath = relativePath.substring(0, relativePath.length() - 1);
       }
     }
-    System.out.println("ALBUMID DEBUG: relativePath is "+relativePath);
     // We need to figure out the albumRoot. We'll start checking AlbumRoots and lop off more of the
     // path as we go. Anything we lop off will be a path stored in Albums.
     int albumRootId = -1;
@@ -390,14 +388,10 @@ public class KahlaCore {
         }
       } catch (SQLException throwables) {
         System.out.println("Failed to get album root ID; this is a directory DigiKam isn't aware of.");
-        // if we didn't get an albumrootID, this file isn't indexed by digikam and we need to
-        // continue elegantly
-        // TODO: i have a feeling this will print many, many times, which is not ideal
         return -1;
       }
 
     }
-    System.out.println("DEBUG got album root: "+albumRootId);
     // If leftoverPath is an empty string, the current directory is an album root and should just be
     // "/".
     if (leftoverPath.equals("")) {
@@ -416,7 +410,7 @@ public class KahlaCore {
       System.out.println("Failed to get album ID for directory: "+directoryName);
       throwables.printStackTrace();
     }
-    // We shouldn't ever get here.
+    // If we're here, this folder doesn't exist in DigiKam.
     return -1;
   }
 
