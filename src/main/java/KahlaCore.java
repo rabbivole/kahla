@@ -1,15 +1,8 @@
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.FilenameFilter;
 import java.sql.*;
 import java.util.*;
-import java.util.regex.Pattern;
 
-// TODO: Automating special tags for files that are in Picasa albums or contain facetags seems
-// totally doable. It's slightly a pain in the ass (I think we need to scrape any [.album or
-// [Contacts2] data for the directory before we do any tag parsing and store those in a list or
-// something; also, we need to *not* skip jpgs for this purpose) so I'll probably add it later.
-// Might want to make it optional.
 
 public class KahlaCore {
   private static Connection conn;
@@ -28,6 +21,13 @@ public class KahlaCore {
   private static final String QUERY_TAG_IMAGE = "INSERT OR IGNORE INTO ImageTags (imageid, tagid) VALUES(?, ?)";
 
 
+  /**
+   * Starting point for the script, passing in parameters.
+   * @param dbDir the formatted user-provided digikam.db location
+   * @param initialImageDir the formatted user-provided directory to trawl for images
+   * @param doRecursive boolean flag, whether to recursively traverse directories in initialImageDir
+   * @param tagPMeta boolean flag, whether to tag files with associated Picasa albums and face tags
+   */
   public static void start(String dbDir, String initialImageDir,
                            boolean doRecursive, boolean tagPMeta) {
     dbConnect(dbDir);
@@ -91,6 +91,13 @@ public class KahlaCore {
   }
 
   // this is some stackoverflow stuff: https://stackoverflow.com/a/5125258
+
+  /**
+   * Returns an array that contains the name of every folder in `topDir`. If `topDir` isn't a valid
+   * file path, this may throw an exception.
+   * @param topDir a file path to a folder to look for subfolders in
+   * @return an array of String names of subfolders within `topDir`
+   */
   private static String[] getFolders(String topDir) {
     File f = new File(topDir);
     return f.list((dir, name) -> { // filtering input
@@ -103,6 +110,16 @@ public class KahlaCore {
     });
   }
 
+  /**
+   * Trawls the Picasa `iniFile` in this directory and creates digiKam tags for all images listed
+   * in it. Requires that `albumId` is the correct digiKam database album ID corresponding to the
+   * directory this ini file comes from and that `iniFile` is a valid Scanner pointed at the
+   * beginning of the file. If we're tagging images with Picasa album/face metadata, `picasaMetaTokens`
+   * must contain appropriate information for those albums/people.
+   * @param iniFile a Scanner pointing to the beginning of a .picasa.ini file
+   * @param albumId the digiKam-assigned album ID for this directory
+   * @param picasaMetaTokens a map of <id, name> pairs identifying Picasa albums or people; may be empty
+   */
   private static void processImages(Scanner iniFile, int albumId, HashMap<String, String> picasaMetaTokens) {
     int filesTagged = 0; // For verbosely reporting everything we did as a sanity check.
     int filesSkipped = 0;
@@ -115,10 +132,6 @@ public class KahlaCore {
     // Grab first line.
     String nextLine = iniFile.nextLine();
     while (iniFile.hasNextLine()) {
-      // We should have an image name, but sanity check:
-      if (nextLine.charAt(0) != '[') {
-        throw new IllegalStateException("Confused and lost in picasa.ini.");
-      }
       // Strip the brackets off it to get the image name.
       String imageName = nextLine.substring(1, nextLine.length() - 1);
 
@@ -169,8 +182,11 @@ public class KahlaCore {
   /**
    * Example input:
    * keywords=interior design,minecraft
-   * @param tags
-   * @param nextLine
+   *
+   * Peels a 'keywords' line of the ini file apart into comma-delimited tags. Populates `tags` with
+   * these tags.
+   * @param tags a List of tags for the image we're working on, which this method will add to
+   * @param nextLine a line from the ini file beginning with 'keywords='
    */
   private static void unpackTags(List<String> tags, String nextLine) {
     // Strip the 'keywords=' off.
@@ -181,6 +197,19 @@ public class KahlaCore {
     tags.addAll(arr);
   }
 
+  /**
+   * Example input:
+   * albums=953fc0ee97037ec68789367577cd3dbf,e293cfc3ccf741306c52a577562455ee
+   * (...where the ini file also includes information on the albums those IDs correspond to)
+   *
+   * Processes an 'albums' line of the ini file and populates `tags` with appropriate tags for the
+   * albums listed. The ini file contains ID numbers for albums; this method adds the names
+   * of those albums to the list of tags, with a prefix marking it as a 'picasa meta' tag.
+   * @param tags a List of tags for the image we're working on, which this method will add to
+   * @param nextLine a line from the ini file beginning with 'albums='
+   * @param picasaMetaTokens a HashMap of <id, name> pairs identifying albums and faces; needed to
+   *                         find a String name for the Picasa album IDs listed
+   */
   private static void unpackAlbums(List<String> tags, String nextLine,
                                    HashMap<String, String> picasaMetaTokens) {
     // Strip the 'albums=' off.
@@ -198,8 +227,15 @@ public class KahlaCore {
    * Example input:
    * faces=rect64(1c863ab430a462a5),7765103530c632d3;rect64(44633848593c6170),1b5634af99e8c7e2
    * (the second token in each pair is the thing we need)
-   * @param tags
-   * @param nextLine
+   *
+   * Processes a 'faces' line of the ini file and populates `tags` with appropriate tags for the
+   * people listed. The ini file contains information on the facetags present in this directory;
+   * this method adds the names of those people to the list of tags, with a prefix marking it as a
+   * 'picasa meta' tag.
+   * @param tags a List of tags for the image we're working on, which this method will add to
+   * @param nextLine a line from the ini file beginning with 'faces='
+   * @param picasaMetaTokens a HashMap of <id, name> pairs identifying albums and faces; needed to
+   *                         find a String name for the facetags listed
    */
   private static void unpackFaces(List<String> tags, String nextLine,
                                   HashMap<String, String> picasaMetaTokens) {
@@ -216,6 +252,17 @@ public class KahlaCore {
     }
   }
 
+  /**
+   * Crawls the ini file opened by `iniFile` to build an index of Picasa albums and facetags present
+   * on the images in this directory. The keys in this HashMap index are the alphanumeric IDs Picasa
+   * assigns to albums and facetagged people, and the values are the human-readable names for those
+   * artifacts. If none are found, this method returns an empty HashMap.
+   *
+   * This method DOES NOT clean up after itself; if called,
+   * the caller needs to create a new Scanner `iniFile` to 'reset' it afterwards.
+   * @param iniFile a Scanner pointing at the beginning of the ini file for our working directory
+   * @return a HashMap populated with <id, name> pairs for the albums and facetags listed- or an empty HashMap, if none found
+   */
   private static HashMap<String, String> buildTokenMap(Scanner iniFile) {
     HashMap<String, String> picasaMetaTokens = new HashMap<>();
     String nextLine = iniFile.nextLine();
@@ -264,6 +311,16 @@ public class KahlaCore {
     return picasaMetaTokens;
   }
 
+  /**
+   * Updates the DigiKam database to tag `imageName` with every tag in `tags`. If the tag doesn't
+   * already exist, it will be created. If this image isn't present in DigiKam's data, this method
+   * does nothing and returns false. If `tags` is an empty list, this method does nothing and
+   * returns true.
+   * @param imageName name of the file to tag
+   * @param tags a list of tags that will be applied to `imageName`
+   * @param albumId DigiKam's ID for the folder/drive location containing `imageName`
+   * @return true if the file was tagged with anything in `tags` or `tags` was empty, false otherwise
+   */
   private static boolean tagImage(String imageName, List<String> tags, int albumId) {
     // Try to grab an image id- if there isn't one, DigiKam doesn't know this file, and
     // we should skip.
@@ -279,8 +336,7 @@ public class KahlaCore {
         tagId = createNewTag(tag);
       }
 
-      // Do an INSERT OR IGNORE into ImageTags to actually tag the image, just in case it's already
-      // tagged.
+      // Do an INSERT OR IGNORE into ImageTags, just in case it's already tagged.
       try {
         PreparedStatement ps = conn.prepareStatement(QUERY_TAG_IMAGE);
         ps.clearParameters();
@@ -298,6 +354,12 @@ public class KahlaCore {
     return true;
   }
 
+  /**
+   * Create a new tag in DigiKam's database and return its ID. This method should only be called
+   * after using fetchTagID to check that no tag named `tag` exists.
+   * @param tag a String tag new to DigiKam's database
+   * @return the unique ID DigiKam assigned the newly added tag, or -1 if a SQL error occurred
+   */
   private static int createNewTag(String tag) {
     // Tag id is an integer primary key, so if we don't specify it, it'll autoincrement.
     // Then we have to use fetchTagID to figure out what id it actually received (which is lame but
@@ -315,6 +377,11 @@ public class KahlaCore {
     }
   }
 
+  /**
+   * Fetches DigiKam's ID for a tag with the name `tag`. Returns -1 if the tag doesn't exist.
+   * @param tag the tag to look for
+   * @return the unique ID DigiKam has assigned that tag, or -1 if it's not found
+   */
   private static int fetchTagID(String tag) {
     try {
       PreparedStatement ps = conn.prepareStatement(QUERY_FETCH_TAGID);
@@ -333,6 +400,13 @@ public class KahlaCore {
     }
   }
 
+  /**
+   * Fetches DigiKam's unique image ID for a file with the name `imageName` in the folder indicated
+   * by `albumId`. Returns -1 if not found.
+   * @param imageName the file name
+   * @param albumId the unique ID DigiKam has assigned to the folder we're working in
+   * @return the unique ID for the file, or -1 if not found
+   */
   private static int fetchImageID(String imageName, int albumId) {
     try {
       PreparedStatement ps = conn.prepareStatement(QUERY_FETCH_IMAGEID);
@@ -353,6 +427,12 @@ public class KahlaCore {
 
   }
 
+  /**
+   * Fetch the unique ID DigiKam has assigned to the folder with full path `directoryName`. Returns
+   * -1 if DigiKam isn't tracking this directory.
+   * @param directoryName a filepath with single forward slashes
+   * @return DigiKam's album ID for the directory or -1 if not found
+   */
   private static int fetchAlbumID(String directoryName) {
     // DigiKam stores directory paths in an extremely wack way. We need to figure out the albumRoot
     // in order to figure out what albumID we're in.
@@ -414,12 +494,10 @@ public class KahlaCore {
     return -1;
   }
 
-  private static boolean isNotJpg(String imageName) {
-    // This won't save you if it's some other file renamed to jpg, but it's good enough.
-    return (!imageName.endsWith("jpg") && !imageName.endsWith("jpeg") &&
-            !imageName.endsWith("JPG") && !imageName.endsWith("JPEG"));
-  }
-
+  /**
+   * Establish SQLite DB connection.
+   * @param dbDir the file path to where digikam.db is stored
+   */
   private static void dbConnect(String dbDir) {
     conn = null;
     try {
